@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slingpuck - Traditional Vertical</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --wood-dark: #3e2723;
+            --wood-medium: #5d4037;
+            --wood-light: #8d6e63;
+            --board-color: #d7ccc8;
+            --accent: #ff9800;
+            --text: #f5f5f5;
+        }
+
+        body {
+            margin: 0;
+            background-color: #1a1a1a;
+            color: var(--text);
+            font-family: 'Outfit', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Lobby Styles */
+        #lobby {
+            background: rgba(46, 34, 34, 0.95);
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            width: 320px;
+            border: 2px solid var(--wood-light);
+        }
+
+        #lobby h1 {
+            margin-top: 0;
+            color: var(--accent);
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: none;
+            background: #4e342e;
+            color: white;
+            box-sizing: border-box;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: var(--accent);
+            color: #2b1d1d;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.02);
+            filter: brightness(1.1);
+        }
+
+        button.secondary {
+            background: var(--wood-light);
+            color: white;
+        }
+
+        /* Game Styles */
+        #game-container {
+            display: none;
+            position: relative;
+            background: var(--wood-dark);
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+        }
+
+        canvas {
+            background: var(--board-color);
+            display: block;
+            border-radius: 5px;
+            border: 8px solid var(--wood-medium);
+        }
+
+        #game-ui {
+            position: absolute;
+            top: 25px;
+            left: 25px;
+            right: 25px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+        }
+
+        .user-tag {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+        }
+
+        #room-disp {
+            margin-top: 15px;
+            font-size: 14px;
+            opacity: 0.7;
+        }
+
+        #win-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            z-index: 100;
+        }
+
+        #win-overlay h2 {
+            font-size: 40px;
+            color: var(--accent);
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="lobby">
+        <h1>SLINGPUCK</h1>
+        <div class="input-group">
+            <label>Username</label>
+            <input type="text" id="username" placeholder="Enter name..." maxlength="12">
+        </div>
+        <div class="btn-row">
+            <button onclick="createRoom()">CREATE ROOM</button>
+        </div>
+        <div style="margin: 15px 0; opacity: 0.5;">— OR —</div>
+        <div class="input-group">
+            <input type="text" id="joinCode" placeholder="Enter Room Code">
+        </div>
+        <button class="secondary" onclick="joinRoom()">JOIN ROOM</button>
+    </div>
+
+    <div id="game-container">
+        <div id="game-ui">
+            <div class="user-tag" id="opponent-name">Waiting...</div>
+            <div class="user-tag" id="player-name">Waiting...</div>
+        </div>
+        <canvas id="gameCanvas" width="400" height="800"></canvas>
+        <div id="win-overlay">
+            <h2 id="win-text">YOU WIN!</h2>
+            <button onclick="location.reload()">BACK TO LOBBY</button>
+        </div>
+        <div id="room-disp">ROOM: <span id="code-val">-----</span></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const lobby = document.getElementById('lobby');
+        const gameContainer = document.getElementById('game-container');
+        const codeVal = document.getElementById('code-val');
+
+        // Config
+        const WIDTH = 400;
+        const HEIGHT = 800;
+        const PUCK_RADIUS = 16;
+        const SLIT_WIDTH = 70;
+        const RUBBER_OFFSET = 60;
+        const ELASTIC_K = 0.45;
+        const FRICTION = 0.985;
+        const MIN_V = 0.15;
+        const WALL_BOUNCE = 0.6;
+
+        let myRoom = null;
+        let mySide = null; // 'top' or 'bottom'
+        let myPucks = [];
+        let opponentPucks = [];
+        let isGameOver = false;
+
+        // Interaction
+        let selectedPuck = null;
+        let pullStart = { x: 0, y: 0 };
+        let pullCurrent = { x: 0, y: 0 };
+
+        class Puck {
+            constructor(x, y, color, side, isMine = false) {
+                this.x = x;
+                this.y = y;
+                this.vx = 0;
+                this.vy = 0;
+                this.color = color;
+                this.side = side; // 'top' or 'bottom'
+                this.isMine = isMine;
+            }
+
+            update() {
+                if (selectedPuck === this) return;
+
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vx *= FRICTION;
+                this.vy *= FRICTION;
+
+                if (Math.abs(this.vx) < MIN_V) this.vx = 0;
+                if (Math.abs(this.vy) < MIN_V) this.vy = 0;
+
+                this.checkWalls();
+            }
+
+            checkWalls() {
+                // Left/Right
+                if (this.x < PUCK_RADIUS) { this.x = PUCK_RADIUS; this.vx *= -WALL_BOUNCE; }
+                if (this.x > WIDTH - PUCK_RADIUS) { this.x = WIDTH - PUCK_RADIUS; this.vx *= -WALL_BOUNCE; }
+
+                // Top/Bottom
+                if (this.y < PUCK_RADIUS) { this.y = PUCK_RADIUS; this.vy *= -WALL_BOUNCE; }
+                if (this.y > HEIGHT - PUCK_RADIUS) { this.y = HEIGHT - PUCK_RADIUS; this.vy *= -WALL_BOUNCE; }
+
+                // Center Divider
+                const mid = HEIGHT / 2;
+                const dToMid = Math.abs(this.y - mid);
+                if (dToMid < PUCK_RADIUS + 5) {
+                    const isInSlit = (this.x > (WIDTH - SLIT_WIDTH) / 2 + PUCK_RADIUS && this.x < (WIDTH + SLIT_WIDTH) / 2 - PUCK_RADIUS);
+                    if (!isInSlit) {
+                        if (this.y < mid) this.y = mid - (PUCK_RADIUS + 5);
+                        else this.y = mid + (PUCK_RADIUS + 5);
+                        this.vy *= -WALL_BOUNCE;
+                    }
+                }
+            }
+
+            draw() {
+                ctx.save();
+
+                // Shadow
+                ctx.shadowBlur = 8;
+                ctx.shadowColor = 'rgba(0,0,0,0.4)';
+                ctx.shadowOffsetY = 4;
+                ctx.shadowOffsetX = 2;
+
+                // Main Body Gradient
+                const grad = ctx.createRadialGradient(this.x - 5, this.y - 5, 2, this.x, this.y, PUCK_RADIUS);
+                if (this.color === '#333') {
+                    grad.addColorStop(0, '#555');
+                    grad.addColorStop(1, '#111');
+                } else if (this.color === '#eee') {
+                    grad.addColorStop(0, '#fff');
+                    grad.addColorStop(1, '#ccc');
+                } else {
+                    grad.addColorStop(0, this.color);
+                    grad.addColorStop(1, '#000');
+                }
+
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, PUCK_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // Ring Detail
+                ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, PUCK_RADIUS - 3, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Highlight
+                ctx.beginPath();
+                ctx.arc(this.x - PUCK_RADIUS * 0.3, this.y - PUCK_RADIUS * 0.3, PUCK_RADIUS * 0.2, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255,255,255,0.15)';
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        // Room Logic
+        function createRoom() {
+            const username = document.getElementById('username').value.trim() || 'Player 1';
+            socket.emit('create_room', { username });
+        }
+
+        function joinRoom() {
+            const username = document.getElementById('username').value.trim() || 'Player 2';
+            const roomCode = document.getElementById('joinCode').value.trim();
+            if (!roomCode) return alert('Enter code');
+            socket.emit('join_room', { username, roomCode });
+        }
+
+        socket.on('room_joined', (data) => {
+            myRoom = data.roomCode;
+            mySide = data.side;
+            codeVal.innerText = myRoom;
+            lobby.style.display = 'none';
+            gameContainer.style.display = 'block';
+
+            initPucks();
+            updatePlayerNames(data.players);
+            requestAnimationFrame(gameLoop);
+        });
+
+        socket.on('player_joined', (players) => updatePlayerNames(players));
+        socket.on('player_left', (players) => updatePlayerNames(players));
+
+        function updatePlayerNames(players) {
+            const opponentSlot = document.getElementById('opponent-name');
+            const playerSlot = document.getElementById('player-name');
+
+            const pArray = Object.values(players);
+            const myData = pArray.find(p => p.side === mySide);
+            const opponentData = pArray.find(p => p.side !== mySide);
+
+            playerSlot.innerText = myData ? `${myData.name} (You)` : 'Waiting...';
+            opponentSlot.innerText = opponentData ? opponentData.name : 'Waiting...';
+        }
+
+        function initPucks() {
+            myPucks = [];
+            const count = 5;
+            const startY = mySide === 'bottom' ? HEIGHT - 120 : 120;
+            const step = 65;
+            const xOff = (WIDTH - (count - 1) * step) / 2;
+
+            for (let i = 0; i < count; i++) {
+                myPucks.push(new Puck(xOff + i * step, startY, mySide === 'bottom' ? '#333' : '#eee', mySide, true));
+            }
+        }
+
+        socket.on('opponent_update', (data) => {
+            opponentPucks = data.pucks.map(p => {
+                const pk = new Puck(p.x, p.y, p.color, p.side, false);
+                pk.vx = p.vx; pk.vy = p.vy;
+                return pk;
+            });
+        });
+
+        socket.on('game_over', (winner) => {
+            isGameOver = true;
+            document.getElementById('win-overlay').style.display = 'flex';
+            document.getElementById('win-text').innerText = winner === mySide ? "YOU WIN!" : "OPPONENT WINS!";
+        });
+
+        function gameLoop() {
+            if (!myRoom) return;
+            ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+            ctx.save();
+            // Rotate the entire board if we are the top player so our side is at the bottom
+            if (mySide === 'top') {
+                ctx.translate(WIDTH, HEIGHT);
+                ctx.rotate(Math.PI);
+            }
+
+            // Draw Board
+            drawWoodBoard();
+
+            // Update & Sync
+            myPucks.forEach(p => p.update());
+            resolveCollisions();
+
+            const remainsOnMySide = myPucks.filter(p => mySide === 'bottom' ? p.y > HEIGHT / 2 : p.y < HEIGHT / 2).length +
+                opponentPucks.filter(p => mySide === 'bottom' ? p.y > HEIGHT / 2 : p.y < HEIGHT / 2).length;
+
+            if (remainsOnMySide === 0 && !isGameOver && opponentPucks.length > 0) {
+                socket.emit('win', { roomCode: myRoom, side: mySide });
+            }
+
+            socket.emit('update_pucks', {
+                roomCode: myRoom,
+                pucks: myPucks.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, color: p.color, side: p.side }))
+            });
+
+            // Draw
+            myPucks.forEach(p => p.draw());
+            opponentPucks.forEach(p => p.draw());
+
+            // Draw Pull Line
+            if (selectedPuck) {
+                const bandY = mySide === 'bottom' ? HEIGHT - RUBBER_OFFSET : RUBBER_OFFSET;
+                ctx.beginPath();
+                ctx.moveTo(0, bandY);
+                ctx.lineTo(selectedPuck.x, selectedPuck.y);
+                ctx.lineTo(WIDTH, bandY);
+
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = 'rgba(255, 152, 0, 0.5)';
+                ctx.strokeStyle = '#ff9800';
+                ctx.lineWidth = 5;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            }
+
+            ctx.restore();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function drawWoodBoard() {
+            // Grain effect
+            ctx.fillStyle = '#d7ccc8';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            ctx.strokeStyle = 'rgba(93, 64, 55, 0.05)';
+            ctx.lineWidth = 2;
+            for (let i = 0; i < WIDTH; i += 10) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i + (Math.random() - 0.5) * 10, HEIGHT);
+                ctx.stroke();
+            }
+
+            // Center Line / Divider
+            ctx.fillStyle = '#5d4037';
+            ctx.fillRect(0, HEIGHT / 2 - 8, (WIDTH - SLIT_WIDTH) / 2, 16);
+            ctx.fillRect((WIDTH + SLIT_WIDTH) / 2, HEIGHT / 2 - 8, (WIDTH - SLIT_WIDTH) / 2, 16);
+
+            // Slit Posts
+            ctx.fillRect((WIDTH - SLIT_WIDTH) / 2 - 5, HEIGHT / 2 - 15, 10, 30);
+            ctx.fillRect((WIDTH + SLIT_WIDTH) / 2 - 5, HEIGHT / 2 - 15, 10, 30);
+
+            // Side Labels
+            ctx.fillStyle = 'rgba(0,0,0,0.05)';
+            ctx.font = 'bold 80px Outfit';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            // Draw text based on perspective
+            if (mySide === 'bottom') {
+                ctx.fillText('OPPONENT', WIDTH / 2, HEIGHT / 4);
+                ctx.fillText('YOU', WIDTH / 2, 3 * HEIGHT / 4);
+            } else {
+                // If mySide is top, the canvas is already rotated 180 degrees.
+                // In world coordinates:
+                // HEIGHT/4 is Top Side (Me)
+                // 3*HEIGHT/4 is Bottom Side (Opponent)
+                // In the rotated view:
+                // World HEIGHT/4 is at screen bottom.
+                // World 3*HEIGHT/4 is at screen top.
+
+                // We need to flip the text drawing so it's not upside down relative to the screen
+                ctx.save();
+                ctx.translate(WIDTH / 2, HEIGHT / 4);
+                ctx.rotate(Math.PI);
+                ctx.fillText('YOU', 0, 0);
+                ctx.restore();
+
+                ctx.save();
+                ctx.translate(WIDTH / 2, 3 * HEIGHT / 4);
+                ctx.rotate(Math.PI);
+                ctx.fillText('OPPONENT', 0, 0);
+                ctx.restore();
+            }
+
+            // Static Slingshots (The rubber bands)
+            ctx.strokeStyle = 'rgba(62, 39, 35, 0.3)';
+            ctx.lineWidth = 8;
+            ctx.lineCap = 'round';
+
+            ctx.beginPath();
+            ctx.moveTo(0, HEIGHT - RUBBER_OFFSET); ctx.lineTo(WIDTH, HEIGHT - RUBBER_OFFSET);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(0, RUBBER_OFFSET); ctx.lineTo(WIDTH, RUBBER_OFFSET);
+            ctx.stroke();
+        }
+
+        // Input
+        function handleDown(x, y) {
+            if (isGameOver) return;
+            const clicked = myPucks.find(p => {
+                const d = Math.hypot(p.x - x, p.y - y);
+                const onSide = mySide === 'bottom' ? p.y > HEIGHT / 2 : p.y < HEIGHT / 2;
+                return d < PUCK_RADIUS * 2 && onSide;
+            });
+
+            if (clicked) {
+                selectedPuck = clicked;
+                pullStart = { x, y };
+            }
+        }
+
+        function handleMove(x, y) {
+            if (!selectedPuck) return;
+            const bandY = mySide === 'bottom' ? HEIGHT - RUBBER_OFFSET : RUBBER_OFFSET;
+
+            // Constrain pull distance
+            let dy = y - bandY;
+            if (mySide === 'bottom') dy = Math.max(0, dy); // Only pull down
+            else dy = Math.min(0, dy); // Only pull up
+
+            selectedPuck.x = x;
+            selectedPuck.y = bandY + dy;
+        }
+
+        function handleUp() {
+            if (!selectedPuck) return;
+            const bandY = mySide === 'bottom' ? HEIGHT - RUBBER_OFFSET : RUBBER_OFFSET;
+
+            // Elastic stretch calculation
+            // Anchors at (0, bandY) and (WIDTH, bandY)
+            const dx1 = -selectedPuck.x;
+            const dy1 = bandY - selectedPuck.y;
+            const dx2 = WIDTH - selectedPuck.x;
+            const dy2 = bandY - selectedPuck.y;
+
+            const d1 = Math.hypot(dx1, dy1);
+            const d2 = Math.hypot(dx2, dy2);
+
+            // Normalized pull vectors
+            const nx1 = dx1 / d1;
+            const ny1 = dy1 / d1;
+            const nx2 = dx2 / d2;
+            const ny2 = dy2 / d2;
+
+            // Total force is the sum of pulls from both anchors
+            const stretch = (d1 + d2) - WIDTH;
+            const forceX = (nx1 + nx2) * stretch * ELASTIC_K;
+            const forceY = (ny1 + ny2) * stretch * ELASTIC_K;
+
+            selectedPuck.vx = forceX;
+            selectedPuck.vy = forceY;
+
+            selectedPuck = null;
+        }
+
+        function resolveCollisions() {
+            const all = [...myPucks, ...opponentPucks];
+            for (let i = 0; i < all.length; i++) {
+                for (let j = i + 1; j < all.length; j++) {
+                    const p1 = all[i];
+                    const p2 = all[j];
+                    const dx = p2.x - p1.x;
+                    const dy = p2.y - p1.y;
+                    const dist = Math.hypot(dx, dy);
+                    const minDist = PUCK_RADIUS * 2;
+
+                    if (dist < minDist && dist > 0) {
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+
+                        // 1. Position Resolution (Anti-overlap)
+                        const overlap = minDist - dist;
+                        const correction = overlap / 2;
+                        if (p1.isMine) { p1.x -= nx * correction; p1.y -= ny * correction; }
+                        if (p2.isMine) { p2.x += nx * correction; p2.y += ny * correction; }
+
+                        // 2. Velocity Resolution (Impact)
+                        const rvx = p2.vx - p1.vx;
+                        const rvy = p2.vy - p1.vy;
+                        const velAlongNormal = rvx * nx + rvy * ny;
+
+                        if (velAlongNormal < 0) {
+                            const e = 0.8;
+                            const j = -(1 + e) * velAlongNormal / 2;
+                            const ix = j * nx;
+                            const iy = j * ny;
+
+                            if (p1.isMine) { p1.vx -= ix; p1.vy -= iy; }
+                            if (p2.isMine) { p2.vx += ix; p2.vy += iy; }
+                        }
+                    }
+                }
+            }
+        }
+
+        function getMousePos(e) {
+            const r = canvas.getBoundingClientRect();
+            let x = e.clientX - r.left;
+            let y = e.clientY - r.top;
+
+            if (mySide === 'top') {
+                x = WIDTH - x;
+                y = HEIGHT - y;
+            }
+            return { x, y };
+        }
+
+        canvas.addEventListener('mousedown', e => {
+            const pos = getMousePos(e);
+            handleDown(pos.x, pos.y);
+        });
+
+        window.addEventListener('mousemove', e => {
+            const pos = getMousePos(e);
+            handleMove(pos.x, pos.y);
+        });
+
+        window.addEventListener('mouseup', handleUp);
+
+        // Touch
+        function getTouchPos(e) {
+            const r = canvas.getBoundingClientRect();
+            let x = e.touches[0].clientX - r.left;
+            let y = e.touches[0].clientY - r.top;
+
+            if (mySide === 'top') {
+                x = WIDTH - x;
+                y = HEIGHT - y;
+            }
+            return { x, y };
+        }
+
+        canvas.addEventListener('touchstart', e => {
+            e.preventDefault();
+            const pos = getTouchPos(e);
+            handleDown(pos.x, pos.y);
+        });
+
+        canvas.addEventListener('touchmove', e => {
+            const pos = getTouchPos(e);
+            handleMove(pos.x, pos.y);
+        });
+
+        canvas.addEventListener('touchend', handleUp);
+
+        socket.on('error', msg => alert(msg));
+    </script>
+</body>
+
+</html>
